@@ -57,7 +57,10 @@ entity fpga64_keyboard is
 		-- backwardsReadingEnabled = 1 allows reversal of PIA registers to still work.
 		-- not needed for kernel/normal operation only for some specific programs.
 		-- set to 0 to save some hardware.
-		backwardsReadingEnabled : in std_logic
+		backwardsReadingEnabled : in std_logic;
+
+		-- Todo: Make this a parameter read from somewhere configurable
+		CommodoreLayout : in std_logic
 	);
 end fpga64_keyboard;
 
@@ -153,10 +156,12 @@ architecture rtl of fpga64_keyboard is
 	-- for joystick emulation on PS2
 	signal old_state : std_logic;
 	
+	-- suffix _is = inhibit shift, _fs = force shift
+	signal key_star_is      : std_logic := '0';
+
 	signal delay_cnt : integer range 0 to 300000;
 	signal delay_end : std_logic;
 	signal ps2_stb   : std_logic;
-	signal key_8s    : std_logic := '0';
 
 begin
 
@@ -198,7 +203,7 @@ begin
 				(pbi(4) or not key_Z) and
 				(pbi(5) or not key_S) and
 				(pbi(6) or not key_E) and
-				(pbi(7) or not (((key_left or key_up or key_caps or key_inst or key_F2 or key_F4 or key_F6 or key_F8) and shift_mod(1)) or (key_shiftl and not key_8s)))));
+				(pbi(7) or not (((key_left or key_up or key_caps or key_inst or key_F2 or key_F4 or key_F6 or key_F8) and shift_mod(1)) or (key_shiftl and not key_star_is)))));
 			pao(2) <= pai(2) and joyB(2) and
 				((not backwardsReadingEnabled) or
 				((pbi(0) or not key_5) and
@@ -242,10 +247,10 @@ begin
 			pao(6) <= pai(6) and
 				((not backwardsReadingEnabled) or
 				((pbi(0) or not key_pound) and
-				(pbi(1) or not (key_star or (key_8s and delay_end))) and
+				(pbi(1) or not (key_star or key_star_is)) and
 				(pbi(2) or not key_semicolon) and
 				(pbi(3) or not key_home) and
-				(pbi(4) or not (((key_left or key_up or key_caps or key_inst or key_F2 or key_F4 or key_F6 or key_F8) and shift_mod(0)) or (key_shiftr and not key_8s))) and
+				(pbi(4) or not (((key_left or key_up or key_caps or key_inst or key_F2 or key_F4 or key_F6 or key_F8) and shift_mod(0)) or (key_shiftr and not key_star_is))) and
 				(pbi(5) or not key_equal) and
 				(pbi(6) or not key_arrowup) and
 				(pbi(7) or not key_slash)));
@@ -256,7 +261,7 @@ begin
 				(pbi(2) or not (key_ctrl or not joyA(6) or not joyB(6))) and
 				(pbi(3) or not key_2) and
 				(pbi(4) or not (key_space or not joyA(5) or not joyB(5))) and
-				(pbi(5) or not (key_commodore or key_caps)) and
+				(pbi(5) or not key_commodore) and
 				(pbi(6) or not key_Q) and
 				(pbi(7) or not key_runstop)));
 
@@ -277,7 +282,7 @@ begin
 				(pai(3) or not key_Y) and
 				(pai(4) or not key_I) and
 				(pai(5) or not key_P) and
-				(pai(6) or not (key_star or (key_8s and delay_end))) and
+				(pai(6) or not (key_star or key_star_is)) and
 				(pai(7) or not key_arrowleft);
 			pbo(2) <= pbi(2) and joyA(2) and
 				(pai(0) or not (key_left or key_right)) and
@@ -304,7 +309,7 @@ begin
 				(pai(3) or not key_B) and
 				(pai(4) or not key_M) and
 				(pai(5) or not key_dot) and
-				(pai(6) or not (((key_left or key_up or key_caps or key_inst or key_F2 or key_F4 or key_F6 or key_F8) and shift_mod(0)) or (key_shiftr and not key_8s))) and
+				(pai(6) or not (((key_left or key_up or key_caps or key_inst or key_F2 or key_F4 or key_F6 or key_F8) and shift_mod(0)) or (key_shiftr and not key_star_is))) and
 				(pai(7) or not (key_space or not joyA(5) or not joyB(5)));
 			pbo(5) <= pbi(5) and
 				(pai(0) or not (key_F3 or key_F4)) and
@@ -314,7 +319,7 @@ begin
 				(pai(4) or not key_K) and
 				(pai(5) or not key_colon) and
 				(pai(6) or not key_equal) and
-				(pai(7) or not (key_commodore or key_caps));
+				(pai(7) or not key_commodore);
 			pbo(6) <= pbi(6) and
 				(pai(0) or not (key_F5 or key_F6)) and
 				(pai(1) or not key_E) and
@@ -326,7 +331,7 @@ begin
 				(pai(7) or not key_Q);
 			pbo(7) <= pbi(7) and
 				(pai(0) or not (key_up or key_down)) and
-				(pai(1) or not (((key_left or key_up or key_caps or key_inst or key_F2 or key_F4 or key_F6 or key_F8) and shift_mod(1)) or (key_shiftl and not key_8s))) and
+				(pai(1) or not (((key_left or key_up or key_caps or key_inst or key_F2 or key_F4 or key_F6 or key_F8) and shift_mod(1)) or (key_shiftl and not key_star_is))) and
 				(pai(2) or not key_X) and
 				(pai(3) or not key_V) and
 				(pai(4) or not key_N) and
@@ -346,7 +351,8 @@ begin
 					when X"0A" => key_F8 <= pressed;
 					when X"01" => key_arrowup <= pressed; -- F9
 					when X"09" => key_equal <= pressed; -- F10
-					when X"0D" => key_commodore <= pressed; 
+					when X"0D" => key_ctrl <= pressed and CommodoreLayout; -- Tab
+					              key_commodore <= pressed and not CommodoreLayout;
 					when X"0E" => key_arrowleft <= pressed;
 					when X"11" => key_commodore <= pressed; 
 					when X"12" => key_shiftl <= pressed;
@@ -377,33 +383,35 @@ begin
 					when X"33" => key_H <= pressed; 
 					when X"34" => key_G <= pressed; 
 					when X"35" => key_Y <= pressed; 
-					when X"36" => key_7 <= pressed and     key_shift;
-									  key_6 <= pressed and not key_shift;
+					when X"36" => key_6 <= pressed and (CommodoreLayout or not key_shift);
+								  key_7 <= pressed and key_shift and not CommodoreLayout;
 					when X"3A" => key_M <= pressed; 
 					when X"3B" => key_J <= pressed; 
 					when X"3C" => key_U <= pressed; 
-					when X"3D" => key_6 <= pressed and     key_shift;
-									  key_7 <= pressed and not key_shift;
-					when X"3E" => key_8s <= pressed and    key_shift;
-									  key_8 <= pressed and not key_shift;
-									  delay_cnt <= 300000;
+					when X"3D" => key_7 <= pressed and (CommodoreLayout or not key_shift);
+								  key_6 <= pressed and key_shift and not CommodoreLayout;
+					when X"3E" => key_8 <= pressed and (CommodoreLayout or not key_shift);
+								  key_star_is <= pressed and key_shift and not CommodoreLayout;
+								  delay_cnt <= 300000;
 					when X"41" => key_comma <= pressed; 
 					when X"42" => key_K <= pressed;
 					when X"43" => key_I <= pressed; 
 					when X"44" => key_O <= pressed; 
-					when X"45" => key_9 <= pressed and     key_shift;
-									  key_0 <= pressed and not key_shift;
-					when X"46" => key_8 <= pressed and     key_shift;
-									  key_9 <= pressed and not key_shift;
+					when X"45" => key_0 <= pressed and (CommodoreLayout or not key_shift);
+								  key_9 <= pressed and key_shift and not CommodoreLayout;
+					when X"46" => key_9 <= pressed and (CommodoreLayout or not key_shift);
+								  key_8 <= pressed and key_shift and not CommodoreLayout;
 					when X"49" => key_dot <= pressed; 
 					when X"4A" => key_slash <= pressed; 
 					when X"4B" => key_L <= pressed; 
 					when X"4C" => key_colon <= pressed; 
 					when X"4D" => key_P <= pressed; 
-					when X"4E" => key_minus <= pressed;
+					when X"4E" => key_plus <= pressed and CommodoreLayout; -- minus
+								  key_minus <= pressed and not CommodoreLayout;
 					when X"52" => key_semicolon <= pressed; 
 					when X"54" => key_at <= pressed; 
-					when X"55" => key_plus <= pressed;
+					when X"55" => key_minus <= pressed and CommodoreLayout; -- Equals/plus
+								  key_plus <= pressed and not CommodoreLayout;
 					when X"58" => key_caps <= pressed;
 					when X"59" => key_shiftr <= pressed;
 					when X"5A" => key_Return <= pressed; 
@@ -479,7 +487,7 @@ begin
 					key_6         <= '0';
 					key_7         <= '0';
 					key_8         <= '0';
-					key_8s        <= '0';
+					key_star_is   <= '0';
 					key_9         <= '0';
 					key_0         <= '0';
 					key_Q         <= '0'; 
