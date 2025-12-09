@@ -61,6 +61,8 @@ module emu
 	input  [11:0] HDMI_WIDTH,
 	input  [11:0] HDMI_HEIGHT,
 	output        HDMI_FREEZE,
+	output        HDMI_BLACKOUT,
+	output        HDMI_BOB_DEINT,
 
 `ifdef MISTER_FB
 	// Use framebuffer in DDRAM
@@ -183,17 +185,19 @@ assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 
 assign LED_DISK   = 0;
 assign LED_POWER  = 0;
-assign LED_USER   = |drive_led | ioctl_download | tape_led;
+assign LED_USER   = |drive_led | ioctl_download | ioctl_upload | ezfl_mod | tape_led | ~disk_ready;
 assign BUTTONS    = 0;
 assign VGA_DISABLE = 0;
 assign VGA_SCALER = 0;
+assign HDMI_BLACKOUT = 0;
+assign HDMI_BOB_DEINT = 0;
 
 // Status Bit Map:
 //              Upper                          Lower
 // 0         1         2         3          4         5         6
 // 01234567890123456789012345678901 23456789012345678901234567890123
 // 0123456789ABCDEFGHIJKLMNOPQRSTUV 0123456789ABCDEFGHIJKLMNOPQRSTUV
-// XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX XXXXX  XXXXXXXXXXXXXXXXXXXXXXX
+// XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 
 `include "build_id.v"
 localparam CONF_STR = {
@@ -202,6 +206,8 @@ localparam CONF_STR = {
 	"H0S1,D64G64T64D81,Mount #9;",
 	"-;",
 	"F1,PRGCRTREUTAP;",
+	"hAdBR[61],Save cartridge;",
+	"hAO[62],Autosave,Off,On;",
 	"h3-;",
 	"h3R[7],Tape Play/Pause;",
 	"h3R[23],Tape Unload;",
@@ -223,6 +229,7 @@ localparam CONF_STR = {
 	"D4D8P1O[72:70],Left Fc Offset,0,1,2,3,4,5;",
 	"D5D9P1O[75:73],Right Fc Offset,0,1,2,3,4,5;",
 	"P1O[22:20],Right SID Port,Same,DE00,D420,D500,DF00;",
+	"P1O[37],8580 Digifix,On,Off;",
 	"P1FC7,FLT,Load Custom Filters;",
 	"P1-;",
 	"P1O[12],Sound Expander,Disabled,OPL2;",
@@ -255,6 +262,7 @@ localparam CONF_STR = {
 	"P2O[50],Reset & Run PRG,Yes,No;",
 	"P2O[42],Pause When OSD is Open,No,Yes;",
 	"P2O[39],Tape Autoplay,Yes,No;",
+	"P2O[38],Boot EasyFlash,Yes,No;",
 	"P2-;",
 	"P2FC8,ROM,System ROM C64+C1541 ;",
 	"P2FC9,ROM,System ROM C1581     ;",
@@ -264,7 +272,7 @@ localparam CONF_STR = {
 
 	"-;",
 	"O[3],Swap Joysticks,No,Yes;",
-	"O[61],Keyboard Layout,Commodore,Modified;",
+	"O[63],Keyboard Layout,Commodore,Modified;",
 	"-;",
 	"O[47:46],Turbo mode,Off,C128,Smart;",
 	"d6O[49:48],Turbo speed,2x,3x,4x;",
@@ -400,10 +408,14 @@ wire [127:0] status;
 wire        forced_scandoubler;
 
 wire        ioctl_wr;
+wire        ioctl_rd;
 wire [24:0] ioctl_addr;
 wire  [7:0] ioctl_data;
+wire  [7:0] ioctl_din;
 wire  [7:0] ioctl_index;
 wire        ioctl_download;
+wire        ioctl_upload;
+wire [31:0] ioctl_file_ext;
 
 wire [31:0] sd_lba[2];
 wire  [5:0] sd_blk_cnt[2];
@@ -443,7 +455,7 @@ hps_io #(.CONF_STR(CONF_STR), .VDNUM(2), .BLKSZ(1)) hps_io
 	.paddle_3(pd4),
 
 	.status(status),
-	.status_menumask({~status[69], ~status[66], status[58], |status[47:46], status[16], status[13], tap_loaded, 1'b0, |vcrop, status[56]}),
+	.status_menumask({ezfl_mod || ezfl_save_en, cart_ezfl, ~status[69], ~status[66], status[58], |status[47:46], status[16], status[13], tap_loaded, 1'b0, |vcrop, status[56]}),
 	.buttons(buttons),
 	.forced_scandoubler(forced_scandoubler),
 	.gamma_bus(gamma_bus),
@@ -469,10 +481,16 @@ hps_io #(.CONF_STR(CONF_STR), .VDNUM(2), .BLKSZ(1)) hps_io
 
 	.ioctl_download(ioctl_download),
 	.ioctl_index(ioctl_index),
+	.ioctl_file_ext(ioctl_file_ext),
 	.ioctl_wr(ioctl_wr),
 	.ioctl_addr(ioctl_addr),
 	.ioctl_dout(ioctl_data),
-	.ioctl_wait(ioctl_req_wr|reset_wait)
+	.ioctl_upload_req(ezfl_save),
+	.ioctl_upload_index(ezfl_idx),
+	.ioctl_upload(ioctl_upload),
+	.ioctl_din(ioctl_din),
+	.ioctl_rd(ioctl_rd),
+	.ioctl_wait(ioctl_req_wr|ioctl_req_rd|reset_wait)
 );
 
 wire load_prg   = ioctl_index == 'h01;
@@ -492,7 +510,9 @@ wire nmi;
 wire cart_oe;
 wire IOF_rd;
 wire  [7:0] cart_data;
+wire  [7:0] cart_wrdata;
 wire [24:0] cart_addr;
+wire cart_mem_req;
 
 cartridge cartridge
 (
@@ -509,6 +529,7 @@ cartridge cartridge
 	.cart_bank_type(cart_bank_type),
 	.cart_bank_raddr(ioctl_load_addr),
 	.cart_bank_wr(cart_hdr_wr),
+	.cart_boot(~status[38]),
 
 	.exrom(exrom),
 	.game(game),
@@ -522,18 +543,42 @@ cartridge cartridge
 	.mem_ce(ram_ce),
 	.mem_ce_out(cart_ce),
 	.mem_write_out(cart_we),
+	.mem_in(sdram_data),
+	.mem_out(cart_wrdata),
+	.mem_addr(cart_addr),
+	.mem_req(cart_mem_req),
+	.mem_cycle(io_cycle),
 	.IO_rom(io_rom),
 	.IO_rd(cart_oe),
 	.IO_data(cart_data),
 	.addr_in(c64_addr),
 	.data_in(c64_data_out),
-	.addr_out(cart_addr),
+	.data_out(c64_data_in),
 
 	.freeze_key(freeze_key),
 	.mod_key(mod_key),
 	.nmi(nmi),
 	.nmi_ack(nmi_ack)
 );
+
+wire ezfl_save = status[61] | (status[62] & OSD_STATUS & ezfl_mod);
+reg  ezfl_mod = 0;
+reg  ezfl_idx = 0;
+reg  ezfl_save_en = 0;
+always @(posedge clk_sys) begin
+	reg save_old = 0;
+	reg ext_old = 0;
+
+	if(cart_mem_req) ezfl_mod <= 1;
+	if(ioctl_download && load_crt) ezfl_mod <= 0;
+	if(ioctl_upload) {ezfl_mod, ezfl_save_en} <= 0;
+	
+	save_old <= ezfl_save;
+	if(~save_old & ezfl_save) ezfl_idx <= ~status[61];
+	
+	ext_old <= ext_crt;
+	if(~ext_old & ext_crt) ezfl_save_en <= 1;
+end
 
 wire        dma_req;
 wire        dma_cycle;
@@ -611,6 +656,7 @@ wire [1:0] pd34_mode = status[29:28];
 
 reg [24:0] ioctl_load_addr;
 reg        ioctl_req_wr;
+reg        ioctl_req_rd;
 
 reg [15:0] cart_id;
 reg [15:0] cart_bank_laddr;
@@ -637,6 +683,10 @@ reg  [7:0] io_cycle_data;
 
 localparam TAP_ADDR = 25'h0200000;
 localparam REU_ADDR = 25'h1000000;
+localparam CRT_ADDR = 25'h0100000;
+
+wire cart_ezfl = cart_attached && (cart_id == 32 || cart_id ==33);
+reg ext_crt = 0;
 
 always @(posedge clk_sys) begin
 	reg  [4:0] erase_to;
@@ -647,6 +697,8 @@ always @(posedge clk_sys) begin
 	reg        old_meminit;
 	reg [15:0] inj_end;
 	reg  [7:0] inj_meminit_data;
+	reg  [2:0] rd_cyc;
+	reg        ioctl_rd_en;
 
 	old_download <= ioctl_download;
 	io_cycleD <= io_cycle;
@@ -665,9 +717,27 @@ always @(posedge clk_sys) begin
 			else if (inj_meminit) io_cycle_data <= inj_meminit_data;
 			else io_cycle_data <= ioctl_data;
 		end
+
+		if(ioctl_req_rd) begin
+			io_cycle_addr <= ioctl_load_addr;
+			ioctl_rd_en <= 1;
+		end
+	end
+	
+	if (io_cycle) {io_cycle_ce, io_cycle_we, ioctl_rd_en} <= 0;
+
+	if (ioctl_rd) begin
+		if(ioctl_addr == 0) ioctl_load_addr <= CRT_ADDR;
+		ioctl_req_rd <= 1;
 	end
 
-	if (io_cycle & io_cycleD) {io_cycle_ce, io_cycle_we} <= 0;
+	rd_cyc <= {rd_cyc[1:0], io_cycle & io_cycle_ce & ioctl_rd_en};
+	if(rd_cyc[2]) begin
+		ioctl_din <= sdram_data;
+		ioctl_req_rd <= 0;
+		ioctl_load_addr <= ioctl_load_addr + 1'b1;
+	end
+
 
 	if (ioctl_wr) begin
 		if (load_prg) begin
@@ -681,7 +751,7 @@ always @(posedge clk_sys) begin
 
 		if (load_crt) begin
 			if (ioctl_addr == 0) begin
-				ioctl_load_addr <= 24'h100000;
+				ioctl_load_addr <= CRT_ADDR;
 				cart_blk_len <= 0;
 				cart_hdr_cnt <= 0;
 			end 
@@ -737,6 +807,7 @@ always @(posedge clk_sys) begin
 	if (old_download != ioctl_download && load_crt) begin
 		cart_attached <= old_download;
 		erase_cram <= 1;
+		ext_crt <= ioctl_download && (ioctl_file_ext == ".CRT");
 	end 
 
 	// meminit for RAM injection
@@ -880,7 +951,7 @@ always @(posedge clk_sys) begin
 	end
 	else begin
 		to <= 0;
-		key <= ps2_key;
+		key <= {ps2_key[10], ps2_key[9] & disk_ready, ps2_key[8:0]};
 	end
 	if(start_strk & ~status[50]) begin
 		act <= 1;
@@ -906,14 +977,15 @@ sdram sdram
 	.clk(clk64),
 	.init(~pll_locked),
 	.refresh(refresh),
-	.addr( io_cycle ? io_cycle_addr : ext_cycle ? reu_ram_addr : cart_addr    ),
-	.ce  ( io_cycle ? io_cycle_ce   : ext_cycle ? reu_ram_ce   : cart_ce      ),
-	.we  ( io_cycle ? io_cycle_we   : ext_cycle ? reu_ram_we   : cart_we      ),
-	.din ( io_cycle ? io_cycle_data : ext_cycle ? reu_ram_dout : c64_data_out ),
+	.addr( io_cycle ? (cart_mem_req ? cart_addr   : io_cycle_addr ) : ext_cycle ? reu_ram_addr : cart_addr   ),
+	.ce  ( io_cycle ? (cart_mem_req ? cart_ce     : io_cycle_ce   ) : ext_cycle ? reu_ram_ce   : cart_ce     ),
+	.we  ( io_cycle ? (cart_mem_req ? cart_we     : io_cycle_we   ) : ext_cycle ? reu_ram_we   : cart_we     ),
+	.din ( io_cycle ? (cart_mem_req ? cart_wrdata : io_cycle_data ) : ext_cycle ? reu_ram_dout : cart_wrdata ),
 	.dout( sdram_data )
 );
 
 wire  [7:0] c64_data_out;
+wire  [7:0] c64_data_in;
 wire [15:0] c64_addr;
 wire        c64_pause;
 wire        refresh;
@@ -951,7 +1023,7 @@ fpga64_sid_iec fpga64
 
 	.ramAddr(c64_addr),
 	.ramDout(c64_data_out),
-	.ramDin(sdram_data),
+	.ramDin(c64_data_in),
 	.ramCE(ram_ce),
 	.ramWE(ram_we),
 
@@ -998,7 +1070,7 @@ fpga64_sid_iec fpga64
 	.pot3(pd34_mode[1] ? paddle_3 : pd34_mode[0] ? mouse_x : {8{joyB_c64[5]}}),
 	.pot4(pd34_mode[1] ? paddle_4 : pd34_mode[0] ? mouse_y : {8{joyB_c64[6]}}),
 
-	.kbdLayout(~status[61]), // Setting 0 as commodore to be default
+	.kbdLayout(~status[63]), // Setting 0 as commodore to be default
 
 	.io_cycle(io_cycle),
 	.ext_cycle(ext_cycle),
@@ -1014,6 +1086,7 @@ fpga64_sid_iec fpga64
 	.sid_cfg({status[68:67],status[65:64]}),
 	.sid_fc_off_l(status[66] ? (13'h600 - {status[72:70],7'd0}) : 13'd0),
 	.sid_fc_off_r(status[69] ? (13'h600 - {status[75:73],7'd0}) : 13'd0),
+	.sid_digifix(~status[37]),
 	.audio_l(audio_l),
 	.audio_r(audio_r),
 
@@ -1080,6 +1153,7 @@ wire       drive_iec_data_o;
 wire       drive_reset = ~reset_n | status[6] | (load_c1581 & ioctl_download);
 
 wire [1:0] drive_led;
+wire       disk_ready;
 
 reg [1:0] drive_mounted = 0;
 always @(posedge clk_sys) begin 
@@ -1109,6 +1183,7 @@ iec_drive iec_drive
 	.img_type(&ioctl_index[7:6] ? 2'b11 : 2'b01),
 
 	.led(drive_led),
+	.disk_ready(disk_ready),
 
 	.par_data_i(drive_par_i),
 	.par_stb_i(drive_stb_i),

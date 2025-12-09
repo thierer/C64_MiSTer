@@ -127,6 +127,7 @@ port(
 	sid_ld_addr : in  std_logic_vector(11 downto 0);
 	sid_ld_data : in  std_logic_vector(15 downto 0);
 	sid_ld_wr   : in  std_logic;
+	sid_digifix : in  std_logic;
 	
 	-- USER
 	pb_i        : in  unsigned(7 downto 0);
@@ -204,6 +205,7 @@ signal systemWe     : std_logic;
 signal pulseWr_io   : std_logic;
 signal systemAddr   : unsigned(15 downto 0);
 
+signal cs_io        : std_logic;
 signal cs_vic       : std_logic;
 signal cs_sid       : std_logic;
 signal cs_color     : std_logic;
@@ -497,6 +499,7 @@ port map (
 
 IOE <= ioe_i;
 IOF <= iof_i;
+cs_io <= cs_vic or cs_sid or cs_color or cs_cia1 or cs_cia2 or ioe_i or iof_i;
 
 process(clk32)
 begin
@@ -665,10 +668,10 @@ port map (
 	audio_l => audio_l,
 	audio_r => audio_r,
 
-	ext_in_l(17) => sid_ver(0),
+	ext_in_l(17) => sid_ver(0) and sid_digifix,
 	ext_in_l(16 downto 0) => (others => '0'),
 
-	ext_in_r(17) => sid_ver(1),
+	ext_in_r(17) => sid_ver(1) and sid_digifix,
 	ext_in_r(16 downto 0) => (others => '0'),
 
 	filter_en => sid_filter,
@@ -843,7 +846,7 @@ begin
 			dma_active <= dma_req;
 			turbo_en <= turbo_mode(0);
 			turbo_m <= "000";
-			if dma_req = '0' and ((turbo_mode(0) and turbo_state) = '1' or turbo_mode(1) = '1') then
+			if cs_io = '0' and dma_req = '0' and ((turbo_mode(0) and turbo_state) = '1' or turbo_mode(1) = '1') then
 				case turbo_speed is
 					when "00" => turbo_m <= "010";
 					when "01" => turbo_m <= "110";
